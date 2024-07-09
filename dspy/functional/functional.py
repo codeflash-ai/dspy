@@ -51,8 +51,7 @@ class _StripOutput(dspy.Module):
         return _StripOutput(self.predictor.copy(), self.output_key)
 
     def forward(self, **kwargs):
-        prediction = self.predictor(**kwargs)
-        return prediction[self.output_key]
+        return self.predictor(**kwargs)[self.output_key]
 
 
 class FunctionalModule(dspy.Module):
@@ -66,7 +65,9 @@ class FunctionalModule(dspy.Module):
                 self.__dict__[name] = attr.copy()
 
 
-def TypedChainOfThought(signature, instructions=None, reasoning=None, *, max_retries=3) -> dspy.Module:  # noqa: N802
+def TypedChainOfThought(
+    signature, instructions=None, reasoning=None, *, max_retries=3
+) -> dspy.Module:  # noqa: N802
     """Just like TypedPredictor, but adds a ChainOfThought OutputField."""
     signature = ensure_signature(signature, instructions)
     output_keys = ", ".join(signature.output_fields.keys())
@@ -87,7 +88,15 @@ def TypedChainOfThought(signature, instructions=None, reasoning=None, *, max_ret
 
 
 class TypedPredictor(dspy.Module):
-    def __init__(self, signature, instructions=None, *, max_retries=3, wrap_json=False, explain_errors=False):
+    def __init__(
+        self,
+        signature,
+        instructions=None,
+        *,
+        max_retries=3,
+        wrap_json=False,
+        explain_errors=False,
+    ):
         """Like dspy.Predict, but enforces type annotations in the signature.
 
         Args:
@@ -129,7 +138,9 @@ class TypedPredictor(dspy.Module):
         )(json_schema=schema).json_object
         # We use the model_validate_json method to make sure the example is valid
         try:
-            type_.model_validate_json(_unwrap_json(json_object, type_.model_validate_json))
+            type_.model_validate_json(
+                _unwrap_json(json_object, type_.model_validate_json)
+            )
         except (pydantic.ValidationError, ValueError):
             return ""  # Unable to make an example
         return json_object
@@ -171,7 +182,9 @@ class TypedPredictor(dspy.Module):
 
         return error_text
 
-    def _make_explanation(self, task_description: str, model_output: str, error: str) -> str:
+    def _make_explanation(
+        self, task_description: str, model_output: str, error: str
+    ) -> str:
         class Signature(dspy.Signature):
             """I gave my language model a task, but it failed.
 
@@ -180,7 +193,9 @@ class TypedPredictor(dspy.Module):
 
             task_description: str = dspy.InputField(desc="What I asked the model to do")
             language_model_output: str = dspy.InputField(desc="The output of the model")
-            error: str = dspy.InputField(desc="The validation error trigged by the models output")
+            error: str = dspy.InputField(
+                desc="The validation error trigged by the models output"
+            )
             explanation: str = dspy.OutputField(desc="Explain what the model did wrong")
             advice: str = dspy.OutputField(
                 desc="Instructions for the model to do better next time. A single paragraph.",
@@ -221,17 +236,33 @@ class TypedPredictor(dspy.Module):
                     signature = signature.with_updated_fields(
                         name,
                         desc=field.json_schema_extra.get("desc", "")
-                        + (f" (Respond with a single {type_.__name__} value)" if type_ != str else ""),
+                        + (
+                            f" (Respond with a single {type_.__name__} value)"
+                            if type_ != str
+                            else ""
+                        ),
                         format=lambda x: x if isinstance(x, str) else str(x),
                         parser=type_,
                     )
                 elif False:
                     # TODO: I don't like forcing the model to write "value" in the output.
-                    if not (inspect.isclass(type_) and issubclass(type_, pydantic.BaseModel)):
-                        type_ = pydantic.create_model("Output", value=(type_, ...), __base__=pydantic.BaseModel)
-                        to_json = lambda x, type_=type_: type_(value=x).model_dump_json()[9:-1]  # {"value":"123"}
-                        from_json = lambda x, type_=type_: type_.model_validate_json('{"value":' + x + "}").value
-                        schema = json.dumps(type_.model_json_schema()["properties"]["value"])
+                    if not (
+                        inspect.isclass(type_) and issubclass(type_, pydantic.BaseModel)
+                    ):
+                        type_ = pydantic.create_model(
+                            "Output", value=(type_, ...), __base__=pydantic.BaseModel
+                        )
+                        to_json = lambda x, type_=type_: type_(
+                            value=x
+                        ).model_dump_json()[
+                            9:-1
+                        ]  # {"value":"123"}
+                        from_json = lambda x, type_=type_: type_.model_validate_json(
+                            '{"value":' + x + "}"
+                        ).value
+                        schema = json.dumps(
+                            type_.model_json_schema()["properties"]["value"]
+                        )
                     else:
                         to_json = lambda x: x.model_dump_json()
                         from_json = lambda x, type_=type_: type_.model_validate_json(x)
@@ -240,26 +271,42 @@ class TypedPredictor(dspy.Module):
                     # Anything else we wrap in a pydantic object
                     if not (
                         inspect.isclass(type_)
-                        and typing.get_origin(type_) not in (list, tuple)  # To support Python 3.9
+                        and typing.get_origin(type_)
+                        not in (list, tuple)  # To support Python 3.9
                         and issubclass(type_, pydantic.BaseModel)
                     ):
-                        type_ = pydantic.create_model("Output", value=(type_, ...), __base__=pydantic.BaseModel)
-                        to_json = lambda x, type_=type_: type_(value=x).model_dump_json()
-                        from_json = lambda x, type_=type_: type_.model_validate_json(x).value
+                        type_ = pydantic.create_model(
+                            "Output", value=(type_, ...), __base__=pydantic.BaseModel
+                        )
+                        to_json = lambda x, type_=type_: type_(
+                            value=x
+                        ).model_dump_json()
+                        from_json = lambda x, type_=type_: type_.model_validate_json(
+                            x
+                        ).value
                         schema = json.dumps(type_.model_json_schema())
                     else:
                         to_json = lambda x: x.model_dump_json()
                         from_json = lambda x, type_=type_: type_.model_validate_json(x)
                         schema = json.dumps(type_.model_json_schema())
                     if self.wrap_json:
-                        to_json = lambda x, inner=to_json: "```json\n" + inner(x) + "\n```\n"
+                        to_json = (
+                            lambda x, inner=to_json: "```json\n" + inner(x) + "\n```\n"
+                        )
                         schema = "```json\n" + schema + "\n```"
                     signature = signature.with_updated_fields(
                         name,
                         desc=field.json_schema_extra.get("desc", "")
-                        + (". Respond with a single JSON object. JSON Schema: " + schema),
-                        format=lambda x, to_json=to_json: (x if isinstance(x, str) else to_json(x)),
-                        parser=lambda x, from_json=from_json: from_json(_unwrap_json(x, from_json)),
+                        + (
+                            ". Respond with a single JSON object. JSON Schema: "
+                            + schema
+                        ),
+                        format=lambda x, to_json=to_json: (
+                            x if isinstance(x, str) else to_json(x)
+                        ),
+                        parser=lambda x, from_json=from_json: from_json(
+                            _unwrap_json(x, from_json)
+                        ),
                         type_=type_,
                     )
             else:  # If input field
@@ -270,9 +317,13 @@ class TypedPredictor(dspy.Module):
                 # Special formatting for lists of known types. Maybe the output fields sohuld have this too?
                 elif typing.get_origin(type_) in (List, list, Tuple, tuple):
                     (inner_type,) = typing.get_args(type_)
-                    if inspect.isclass(inner_type) and issubclass(inner_type, pydantic.BaseModel):
-                        format_ = (
-                            lambda x: x if isinstance(x, str) else "[" + ",".join(i.model_dump_json() for i in x) + "]"
+                    if inspect.isclass(inner_type) and issubclass(
+                        inner_type, pydantic.BaseModel
+                    ):
+                        format_ = lambda x: (
+                            x
+                            if isinstance(x, str)
+                            else "[" + ",".join(i.model_dump_json() for i in x) + "]"
                         )
                     else:
                         format_ = lambda x: x if isinstance(x, str) else json.dumps(x)
@@ -281,7 +332,9 @@ class TypedPredictor(dspy.Module):
                     format_ = lambda x: x if isinstance(x, str) else x.model_dump_json()
                     is_json = True
                 if self.wrap_json and is_json:
-                    format_ = lambda x, inner=format_: x if isinstance(x, str) else "```json\n" + inner(x) + "\n```\n"
+                    format_ = lambda x, inner=format_: (
+                        x if isinstance(x, str) else "```json\n" + inner(x) + "\n```\n"
+                    )
                 signature = signature.with_updated_fields(name, format=format_)
 
         return signature
@@ -325,7 +378,12 @@ class TypedPredictor(dspy.Module):
                         ):
                             signature = signature.with_updated_fields(
                                 name,
-                                desc=current_desc + "\n" + prefix + example + "\n" + suffix,
+                                desc=current_desc
+                                + "\n"
+                                + prefix
+                                + example
+                                + "\n"
+                                + suffix,
                             )
                 # No reason trying to parse the general signature, or run more completions, if we already have errors
                 if errors:
@@ -340,7 +398,10 @@ class TypedPredictor(dspy.Module):
                         e,
                         signature.instructions,
                         "\n\n".join(
-                            "> " + field.json_schema_extra["prefix"] + " " + completion[name]
+                            "> "
+                            + field.json_schema_extra["prefix"]
+                            + " "
+                            + completion[name]
                             for name, field in signature.output_fields.items()
                         ),
                         lm_explain=try_i + 1 < self.max_retries,
@@ -352,7 +413,9 @@ class TypedPredictor(dspy.Module):
                     if name == "general":
                         error_prefix = "General:"
                     else:
-                        error_prefix = signature.output_fields[name].json_schema_extra["prefix"]
+                        error_prefix = signature.output_fields[name].json_schema_extra[
+                            "prefix"
+                        ]
                     number = "" if try_i == 0 else f" ({try_i+1})"
                     signature = signature.append(
                         f"error_{name}_{try_i}",
@@ -364,10 +427,14 @@ class TypedPredictor(dspy.Module):
             else:
                 # If there are no errors, we return the parsed results
                 return Prediction.from_completions(
-                    {key: [r[key] for r in parsed_results] for key in signature.output_fields},
+                    {
+                        key: [r[key] for r in parsed_results]
+                        for key in signature.output_fields
+                    },
                 )
         raise ValueError(
-            "Too many retries trying to get the correct output format. " + "Try simplifying the requirements.",
+            "Too many retries trying to get the correct output format. "
+            + "Try simplifying the requirements.",
             errors,
         )
 
@@ -388,7 +455,10 @@ def _func_to_signature(func):
         annotation = annotations.get(param.name, str)
         kwargs = {}
         if typing.get_origin(annotation) is Annotated:
-            desc = next((arg for arg in typing.get_args(annotation) if isinstance(arg, str)), None)
+            desc = next(
+                (arg for arg in typing.get_args(annotation) if isinstance(arg, str)),
+                None,
+            )
             if desc is not None:
                 kwargs["desc"] = desc
         fields[param.name] = (annotation, dspy.InputField(**kwargs))
@@ -397,7 +467,9 @@ def _func_to_signature(func):
     kwargs = {}
     annotation = annotations.get("return", str)
     if typing.get_origin(annotation) is Annotated:
-        desc = next((arg for arg in typing.get_args(annotation) if isinstance(arg, str)), None)
+        desc = next(
+            (arg for arg in typing.get_args(annotation) if isinstance(arg, str)), None
+        )
         if desc is not None:
             kwargs["desc"] = desc
     fields[output_key] = (annotation, dspy.OutputField(**kwargs))
@@ -414,8 +486,12 @@ def _unwrap_json(output, from_json: Callable[[str], Union[pydantic.BaseModel, st
             if not output.startswith("```json"):
                 raise ValueError("json output should start with ```json") from None
             if not output.endswith("```"):
-                raise ValueError("Don't write anything after the final json ```") from None
+                raise ValueError(
+                    "Don't write anything after the final json ```"
+                ) from None
             output = output[7:-3].strip()
         if not output.startswith("{") or not output.endswith("}"):
             raise ValueError("json output should start and end with { and }") from None
-        return ujson.dumps(ujson.loads(output))  # ujson is a bit more robust than the standard json
+        return ujson.dumps(
+            ujson.loads(output)
+        )  # ujson is a bit more robust than the standard json
