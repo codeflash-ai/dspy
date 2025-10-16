@@ -67,18 +67,25 @@ class GSM8K:
 def parse_integer_answer(answer, only_first_line=True):
     try:
         if only_first_line:
-            answer = answer.strip().split('\n')[0]
-
-        # find the last token that has a number in it
-        answer = [token for token in answer.split() if any(c.isdigit() for c in token)][-1]
-        answer = answer.split('.')[0]
-        answer = ''.join([c for c in answer if c.isdigit()])
-        answer = int(answer)
-
+            answer = answer.strip().split('\n', 1)[0]
+        
+        # Efficiently find the last token containing a digit using reversed and next (avoids list creation)
+        tokens = answer.split()
+        for token in reversed(tokens):
+            for c in token:
+                if c.isdigit():
+                    # Use partition to avoid split + index
+                    int_token = token.partition('.')[0]
+                    # More efficient digit extraction using generator expression
+                    digits = ''.join(c for c in int_token if c.isdigit())
+                    answer = int(digits)
+                    return answer
+        # If loop finishes, no token contains a digit
+        answer = 0
     except (ValueError, IndexError):
         # print(answer)
         answer = 0
-    
+
     return answer
 
 
