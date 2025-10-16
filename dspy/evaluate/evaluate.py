@@ -272,7 +272,7 @@ def merge_dicts(d1, d2) -> dict:
 
 def truncate_cell(content) -> str:
     """Truncate content of a cell to 25 words."""
-    words = str(content).split()
+    words = str(content).split(None, 25)
     if len(words) > 25:
         return " ".join(words[:25]) + "..."
     return content
