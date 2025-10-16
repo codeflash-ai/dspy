@@ -54,10 +54,7 @@ class YouRM(dspy.Retrieve):
             for field in news_api_fields:
                 if field:
                     warnings.warn(
-                        (
-                            f"News API-specific field '{field}' is set but `{endpoint=}`. "
-                            "This will have no effect."
-                        ),
+                        (f"News API-specific field '{field}' is set but `{endpoint=}`. " "This will have no effect."),
                         UserWarning,
                     )
 
@@ -71,24 +68,28 @@ class YouRM(dspy.Retrieve):
         self.spellcheck = spellcheck
 
     def _generate_params(self, query: str) -> dict[str, Any]:
-        params = {"safesearch": self.safesearch, "country": self.country}
+        params = {}
+
+        if self.safesearch is not None:
+            params["safesearch"] = self.safesearch
+        if self.country is not None:
+            params["country"] = self.country
 
         if self.endpoint == "search":
-            params.update(
-                query=query,
-                num_web_results=self.num_web_results,
-            )
+            params["query"] = query
+            if self.num_web_results is not None:
+                params["num_web_results"] = self.num_web_results
         elif self.endpoint == "news":
-            params.update(
-                q=query,
-                count=self.num_web_results,
-                search_lang=self.search_lang,
-                ui_lang=self.ui_lang,
-                spellcheck=self.spellcheck,
-            )
+            params["q"] = query
+            if self.num_web_results is not None:
+                params["count"] = self.num_web_results
+            if self.search_lang is not None:
+                params["search_lang"] = self.search_lang
+            if self.ui_lang is not None:
+                params["ui_lang"] = self.ui_lang
+            if self.spellcheck is not None:
+                params["spellcheck"] = self.spellcheck
 
-        # Remove `None` values
-        params = {k: v for k, v in params.items() if v is not None}
         return params
 
     def forward(self, query_or_queries: Union[str, list[str]], k: Optional[int] = None) -> dspy.Prediction:
