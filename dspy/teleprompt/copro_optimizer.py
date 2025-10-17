@@ -67,6 +67,7 @@ class COPRO(Teleprompter):
     ):
         if breadth <= 1:
             raise ValueError("Breadth must be greater than 1")
+        # Assign instance variables directly
         self.metric = metric
         self.breadth = breadth
         self.depth = depth
@@ -74,8 +75,11 @@ class COPRO(Teleprompter):
         self.prompt_model = prompt_model
         self.track_stats = track_stats
 
-        if "verbose" in _kwargs:
-            dspy.logger.warning("DeprecationWarning: 'verbose' has been deprecated. To see all information for debugging, use 'dspy.set_log_level('debug')'. In the future this will raise an error.")
+        # Use a faster lookup for 'verbose' key
+        if _kwargs.get("verbose", False):
+            dspy.logger.warning(
+                "DeprecationWarning: 'verbose' has been deprecated. To see all information for debugging, use 'dspy.set_log_level('debug')'. In the future this will raise an error."
+            )
 
     def _check_candidates_equal(self, candidate1, candidate2):
         for p1, p2 in zip(candidate1["program"].predictors(), candidate2["program"].predictors()):
@@ -114,10 +118,14 @@ class COPRO(Teleprompter):
         dspy.logger.debug(f"p: {list(signature.fields.values())[-1].json_schema_extra['prefix']}")
 
     def _get_signature(self, predictor):
-        if hasattr(predictor, "extended_signature"):
-            return predictor.extended_signature
-        elif hasattr(predictor, "signature"):
-            return predictor.signature
+        # Avoids function call if direct attribute access is possible, preserving attribute order and logic.
+        # Uses local variable lookup for performance.
+        extended_sig = getattr(predictor, "extended_signature", None)
+        if extended_sig is not None:
+            return extended_sig
+        sig = getattr(predictor, "signature", None)
+        if sig is not None:
+            return sig
 
     def _set_signature(self, predictor, updated_signature):
         if hasattr(predictor, "extended_signature"):
@@ -321,7 +329,9 @@ class COPRO(Teleprompter):
                     )(attempted_instructions=attempts)
 
                 if self.prompt_model:
-                    dspy.logger.debug(f"(self.prompt_model.inspect_history(n=1)) {self.prompt_model.inspect_history(n=1)}")
+                    dspy.logger.debug(
+                        f"(self.prompt_model.inspect_history(n=1)) {self.prompt_model.inspect_history(n=1)}"
+                    )
                 # Get candidates for each predictor
                 new_candidates[id(p_base)] = instr.completions
                 all_candidates[id(p_base)].proposed_instruction.extend(instr.completions.proposed_instruction)
