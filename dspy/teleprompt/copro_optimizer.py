@@ -75,14 +75,31 @@ class COPRO(Teleprompter):
         self.track_stats = track_stats
 
         if "verbose" in _kwargs:
-            dspy.logger.warning("DeprecationWarning: 'verbose' has been deprecated. To see all information for debugging, use 'dspy.set_log_level('debug')'. In the future this will raise an error.")
+            dspy.logger.warning(
+                "DeprecationWarning: 'verbose' has been deprecated. To see all information for debugging, use 'dspy.set_log_level('debug')'. In the future this will raise an error."
+            )
 
     def _check_candidates_equal(self, candidate1, candidate2):
-        for p1, p2 in zip(candidate1["program"].predictors(), candidate2["program"].predictors()):
-            if self._get_signature(p1).instructions != self._get_signature(p2).instructions:
+        # Cache signature lookups for minimal repeated attribute access
+        prog1 = candidate1["program"]
+        prog2 = candidate2["program"]
+        predictors1 = prog1.predictors()
+        predictors2 = prog2.predictors()
+
+        # Avoid zipping longer than necessary (stop early if predictors are unequal length)
+        if len(predictors1) != len(predictors2):
+            return False
+
+        # Pre-fetch get_signature to local for faster lookup in loop
+        get_signature = self._get_signature
+        for p1, p2 in zip(predictors1, predictors2):
+            sig1 = get_signature(p1)
+            sig2 = get_signature(p2)
+            if sig1.instructions != sig2.instructions:
                 return False
-            *_, p1_last_field = self._get_signature(p1).fields.values()
-            *_, p2_last_field = self._get_signature(p2).fields.values()
+            # Use reversed and next instead of unpacking to efficiently get last field value
+            p1_last_field = next(reversed(sig1.fields.values()))
+            p2_last_field = next(reversed(sig2.fields.values()))
             if p1_last_field != p2_last_field:
                 return False
         return True
@@ -321,7 +338,9 @@ class COPRO(Teleprompter):
                     )(attempted_instructions=attempts)
 
                 if self.prompt_model:
-                    dspy.logger.debug(f"(self.prompt_model.inspect_history(n=1)) {self.prompt_model.inspect_history(n=1)}")
+                    dspy.logger.debug(
+                        f"(self.prompt_model.inspect_history(n=1)) {self.prompt_model.inspect_history(n=1)}"
+                    )
                 # Get candidates for each predictor
                 new_candidates[id(p_base)] = instr.completions
                 all_candidates[id(p_base)].proposed_instruction.extend(instr.completions.proposed_instruction)
