@@ -59,7 +59,9 @@ class Example:
         return hash(tuple(self._store.items()))
 
     def keys(self, include_dspy=False):
-        return [k for k in self._store.keys() if not k.startswith("dspy_") or include_dspy]
+        if include_dspy:
+            return list(self._store)
+        return [k for k in self._store if not k.startswith("dspy_")]
 
     def values(self, include_dspy=False):
         return [v for k, v in self._store.items() if not k.startswith("dspy_") or include_dspy]
