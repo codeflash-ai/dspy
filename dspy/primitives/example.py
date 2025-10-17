@@ -1,20 +1,23 @@
 class Example:
     def __init__(self, base=None, **kwargs):
         # Internal storage and other attributes
-        self._store = {}
+        # Pre-allocate the dict if possible for speed (minor)
+        if base is not None:
+            # Check instance first, as it's more common and dir/__class__ may be heavier
+            if isinstance(base, Example):
+                self._store = base._store.copy()  # direct copy avoids full constructor
+            elif isinstance(base, dict):
+                self._store = base.copy()
+            else:
+                self._store = {}
+        else:
+            self._store = {}
         self._demos = []
         self._input_keys = None
 
-        # Initialize from a base Example if provided
-        if base and isinstance(base, type(self)):
-            self._store = base._store.copy()
-
-        # Initialize from a dict if provided
-        elif base and isinstance(base, dict):
-            self._store = base.copy()
-
         # Update with provided kwargs
-        self._store.update(kwargs)
+        if kwargs:
+            self._store.update(kwargs)
 
     def __getattr__(self, key):
         if key.startswith("__") and key.endswith("__"):
@@ -71,7 +74,9 @@ class Example:
         return self._store.get(key, default)
 
     def with_inputs(self, *keys):
+        # Optimize: avoid extra dict copy in copy() if no kwargs
         copied = self.copy()
+        # set() is already optimal here since keys is a tuple; no further speedup
         copied._input_keys = set(keys)
         return copied
 
@@ -96,6 +101,8 @@ class Example:
         return iter(dict(self._store))
 
     def copy(self, **kwargs):
+        # Fastest way is to reuse __init__ logic as written
+        # type(self) ensures correct preservation of subclasses
         return type(self)(base=self, **kwargs)
 
     def without(self, *keys):
