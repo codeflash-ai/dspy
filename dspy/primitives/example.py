@@ -6,15 +6,15 @@ class Example:
         self._input_keys = None
 
         # Initialize from a base Example if provided
-        if base and isinstance(base, type(self)):
-            self._store = base._store.copy()
-
-        # Initialize from a dict if provided
-        elif base and isinstance(base, dict):
-            self._store = base.copy()
+        if base is not None:
+            if isinstance(base, type(self)):
+                self._store = base._store.copy()
+            elif isinstance(base, dict):
+                self._store = base.copy()
 
         # Update with provided kwargs
-        self._store.update(kwargs)
+        if kwargs:
+            self._store.update(kwargs)
 
     def __getattr__(self, key):
         if key.startswith("__") and key.endswith("__"):
@@ -80,8 +80,7 @@ class Example:
             raise ValueError("Inputs have not been set for this example. Use `example.with_inputs()` to set them.")
 
         # return items that are in input_keys
-        d = {key: self._store[key] for key in self._store if key in self._input_keys}
-        # return type(self)(d)
+        d = {key: self._store[key] for key in self._input_keys if key in self._store}
         new_instance = type(self)(base=d)
         new_instance._input_keys = self._input_keys  # Preserve input_keys in new instance
         return new_instance
