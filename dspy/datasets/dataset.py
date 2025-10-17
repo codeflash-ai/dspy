@@ -58,10 +58,10 @@ class Dataset:
         return self._test_
 
     def _shuffle_and_sample(self, split, data, size, seed=0):
-        '''
+        """
             The setting (seed=s, size=N) is always a subset
             of the setting (seed=s, size=M) for N < M.
-        '''
+        """
 
         data = list(data)
 
@@ -74,18 +74,23 @@ class Dataset:
         data = data[:size]
         output = []
 
-        for example in data:
-            example_obj = Example(**example, dspy_uuid=str(uuid.uuid4()), dspy_split=split)
-            if self.input_keys:
-                example_obj = example_obj.with_inputs(*self.input_keys)
-            output.append(example_obj)
-        # TODO: NOTE: Ideally we use these uuids for dedup internally, for demos and internal train/val splits.
-        # Now, some tasks (like convQA and Colors) have overlapping examples. Here, we should allow the user to give us
-        # a uuid field that would respect this in some way. This means that we need a more refined concept that
-        # uuid (each example is unique) and more like a group_uuid.
+        # Precompute dspy_uuid to avoid spending time in the loop
+        uuids = [str(uuid.uuid4()) for _ in data]
+        ExampleCls = Example  # local ref for fast lookups
+        input_keys = self.input_keys
+        # Use method ref for slight perf gain
+        with_inputs = Example.with_inputs
 
-        # rng = random.Random(seed)
-        # rng.shuffle(data)
+        for idx, example in enumerate(data):
+            # Combine once to minimize dict creation
+            ex_kwargs = dict(example)
+            ex_kwargs['dspy_uuid'] = uuids[idx]
+            ex_kwargs['dspy_split'] = split
+            example_obj = ExampleCls(**ex_kwargs)
+            if input_keys:
+                # Avoid attribute access and method lookup in loop
+                example_obj = with_inputs(example_obj, *input_keys)
+            output.append(example_obj)
 
         return output
     

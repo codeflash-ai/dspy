@@ -71,8 +71,12 @@ class Example:
         return self._store.get(key, default)
 
     def with_inputs(self, *keys):
+        # Fast path: if self._input_keys already equals set(keys), return self (skip copy)
+        keys_set = set(keys)
+        if self._input_keys == keys_set:
+            return self
         copied = self.copy()
-        copied._input_keys = set(keys)
+        copied._input_keys = keys_set
         return copied
 
     def inputs(self):
