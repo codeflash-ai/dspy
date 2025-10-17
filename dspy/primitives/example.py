@@ -62,7 +62,9 @@ class Example:
         return [k for k in self._store.keys() if not k.startswith("dspy_") or include_dspy]
 
     def values(self, include_dspy=False):
-        return [v for k, v in self._store.items() if not k.startswith("dspy_") or include_dspy]
+        if include_dspy:
+            return list(self._store.values())
+        return [v for k, v in self._store.items() if not k.startswith("dspy_")]
 
     def items(self, include_dspy=False):
         return [(k, v) for k, v in self._store.items() if not k.startswith("dspy_") or include_dspy]
