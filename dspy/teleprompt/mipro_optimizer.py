@@ -138,21 +138,26 @@ class MIPRO(Teleprompter):
         metric,
         prompt_model=None,
         task_model=None,
-        teacher_settings={},
+        teacher_settings=None,
         num_candidates=10,
         init_temperature=1.0,
         verbose=False,
         track_stats=True,
         view_data_batch_size=10,
     ):
+        # Avoid mutable default argument for teacher_settings
+        self.teacher_settings = teacher_settings if teacher_settings is not None else {}
         self.num_candidates = num_candidates
         self.metric = metric
         self.init_temperature = init_temperature
-        self.prompt_model = prompt_model if prompt_model is not None else dspy.settings.lm
-        self.task_model = task_model if task_model is not None else dspy.settings.lm
+
+        # Inline the settings attribute lookup; preserve same behavior
+        settings_lm = dspy.settings.lm
+        self.prompt_model = prompt_model if prompt_model is not None else settings_lm
+        self.task_model = task_model if task_model is not None else settings_lm
+
         self.verbose = verbose
         self.track_stats = track_stats
-        self.teacher_settings = teacher_settings
         self.view_data_batch_size = view_data_batch_size
 
     def _print_full_program(self, program):
@@ -218,11 +223,11 @@ class MIPRO(Teleprompter):
         return "\n".join(output)
 
     def _get_signature(self, predictor):
-        if hasattr(predictor, "extended_signature"):
-            return predictor.extended_signature
-        elif hasattr(predictor, "signature"):
-            return predictor.signature
-        return None
+        # Faster lookup with getattr and default, only one attribute lookup per candidate
+        sig = getattr(predictor, "extended_signature", None)
+        if sig is not None:
+            return sig
+        return getattr(predictor, "signature", None)
 
     def _set_signature(self, predictor, updated_signature):
         if hasattr(predictor, "extended_signature"):
@@ -401,7 +406,9 @@ class MIPRO(Teleprompter):
             {YELLOW}Awaiting your input...{ENDC}
         """)
 
-        print(f"""{RED}{BOLD}WARNING: MIPRO has been deprecated and replaced with MIPROv2.  MIPRO will be removed in a future release. {ENDC}""")
+        print(
+            f"""{RED}{BOLD}WARNING: MIPRO has been deprecated and replaced with MIPROv2.  MIPRO will be removed in a future release. {ENDC}"""
+        )
         print(user_message)
 
         sys.stdout.flush()  # Flush the output buffer to force the message to print
