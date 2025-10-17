@@ -8,11 +8,9 @@ class Example:
         # Initialize from a base Example if provided
         if base and isinstance(base, type(self)):
             self._store = base._store.copy()
-
         # Initialize from a dict if provided
         elif base and isinstance(base, dict):
             self._store = base.copy()
-
         # Update with provided kwargs
         self._store.update(kwargs)
 
@@ -65,7 +63,13 @@ class Example:
         return [v for k, v in self._store.items() if not k.startswith("dspy_") or include_dspy]
 
     def items(self, include_dspy=False):
-        return [(k, v) for k, v in self._store.items() if not k.startswith("dspy_") or include_dspy]
+        # Use generator and only construct list if necessary for efficiency
+        if include_dspy:
+            # No filtering needed, return all items as a list (to maintain return type)
+            return list(self._store.items())
+        # Otherwise, filter out keys starting with "dspy_"
+        # Use list comprehension directly for memory and speed (avoids function call overhead)
+        return [item for item in self._store.items() if not item[0].startswith("dspy_")]
 
     def get(self, key, default=None):
         return self._store.get(key, default)
