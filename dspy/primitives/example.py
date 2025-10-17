@@ -6,22 +6,23 @@ class Example:
         self._input_keys = None
 
         # Initialize from a base Example if provided
-        if base and isinstance(base, type(self)):
-            self._store = base._store.copy()
-
-        # Initialize from a dict if provided
-        elif base and isinstance(base, dict):
-            self._store = base.copy()
+        if base is not None:
+            if isinstance(base, type(self)):
+                self._store = base._store.copy()
+            elif isinstance(base, dict):
+                self._store = base.copy()
 
         # Update with provided kwargs
-        self._store.update(kwargs)
+        if kwargs:
+            self._store.update(kwargs)
 
     def __getattr__(self, key):
         if key.startswith("__") and key.endswith("__"):
             raise AttributeError
-        if key in self._store:
+        try:
             return self._store[key]
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{key}'")
+        except KeyError:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{key}'")
 
     def __setattr__(self, key, value):
         if key.startswith("_") or key in dir(self.__class__):
