@@ -10,7 +10,7 @@ import dspy
 
 def _build_error_msg(feedback_msgs):
     """Build an error message from a list of feedback messages."""
-    return "\n".join([msg for msg in feedback_msgs])
+    return "\n".join(feedback_msgs)
 
 
 #################### Assertion Exceptions ####################
