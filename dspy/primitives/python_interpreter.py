@@ -170,83 +170,73 @@ class PythonInterpreter:
     # but is still necessary for older versions.
     @typing.no_type_check
     def _execute_ast(self, expression: ast.AST) -> Any:
-        if isinstance(expression, ast.Assign):
-            # Assignment -> evaluate the assignment which should
-            # update the state. We return the variable assigned as it may
-            # be used to determine the final result.
+        typ = type(expression)
+        # Use type fast-path dispatch for performance (CPython optimization)
+        if typ is ast.Assign:
             return self._execute_assign(expression)
-        elif isinstance(expression, ast.Attribute):
+        elif typ is ast.Attribute:
             value = self._execute_ast(expression.value)
             return getattr(value, expression.attr)
-        elif isinstance(expression, ast.AugAssign):
+        elif typ is ast.AugAssign:
             return self._execute_augassign(expression)
-        elif isinstance(expression, ast.BinOp):
-            # Binary Operator -> return the result value
+        elif typ is ast.BinOp:
             return self._execute_binop(expression)
-        elif isinstance(expression, ast.Call):
-            # Function call -> return the value of the function call
+        elif typ is ast.Call:
             return self._execute_call(expression)
-        elif isinstance(expression, ast.Compare):
+        elif typ is ast.Compare:
             return self._execute_condition(expression)
-        elif isinstance(expression, ast.Constant):
-            # Constant -> just return the value
+        elif typ is ast.Constant:
             return expression.value
-        elif isinstance(expression, ast.Dict):
+        elif typ is ast.Dict:
             # Dict -> evaluate all keys and values
             result: Dict = {}
-            for k, v in zip(expression.keys, expression.values):
+            # Use zip directly, no additional list conversion
+            keys, values = expression.keys, expression.values
+            for k, v in zip(keys, values):
                 if k is not None:
                     result[self._execute_ast(k)] = self._execute_ast(v)
                 else:
                     result.update(self._execute_ast(v))
             return result
-        elif isinstance(expression, ast.Expr):
-            # Expression -> evaluate the content
+        elif typ is ast.Expr:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.For):
+        elif typ is ast.For:
             return self._execute_for(expression)
-        elif isinstance(expression, ast.FormattedValue):
-            # Formatted value (part of f-string) -> evaluate the content
-            # and return
+        elif typ is ast.FormattedValue:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.FunctionDef):
+        elif typ is ast.FunctionDef:
             self.state[expression.name] = expression
             return None
-        elif isinstance(expression, ast.If):
-            # If -> execute the right branch
+        elif typ is ast.If:
             return self._execute_if(expression)
-        elif isinstance(expression, ast.Import):
-            # Import -> add imported names in self.state and return None.
+        elif typ is ast.Import:
             self._execute_import(expression)
             return None
-        elif isinstance(expression, ast.ImportFrom):
+        elif typ is ast.ImportFrom:
             self._execute_import_from(expression)
             return None
-        elif hasattr(ast, "Index") and isinstance(expression, ast.Index):
-            # cannot pass type check
+        elif hasattr(ast, "Index") and typ is ast.Index:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.JoinedStr):
-            return "".join(
-                [str(self._execute_ast(v)) for v in expression.values])
-        elif isinstance(expression, ast.List):
-            # List -> evaluate all elements
-            return [self._execute_ast(elt) for elt in expression.elts]
-        elif isinstance(expression, ast.Name):
-            # Name -> pick up the value in the state
+        elif typ is ast.JoinedStr:
+            # Direct generator join for less allocation
+            return "".join(str(self._execute_ast(v)) for v in expression.values)
+        elif typ is ast.List:
+            elts = expression.elts
+            # Use list comprehension in place
+            return [self._execute_ast(elt) for elt in elts]
+        elif typ is ast.Name:
             return self._execute_name(expression)
-        elif isinstance(expression, ast.Return):
+        elif typ is ast.Return:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.Subscript):
-            # Subscript -> return the value of the indexing
+        elif typ is ast.Subscript:
             return self._execute_subscript(expression)
-        elif isinstance(expression, ast.Tuple):
-            return tuple([self._execute_ast(elt) for elt in expression.elts])
-        elif isinstance(expression, ast.UnaryOp):
-            # Binary Operator -> return the result value
+        elif typ is ast.Tuple:
+            elts = expression.elts
+            # Use tuple comprehension
+            return tuple(self._execute_ast(elt) for elt in elts)
+        elif typ is ast.UnaryOp:
             return self._execute_unaryop(expression)
         else:
-            # For now we refuse anything else. Let's add things as we need
-            # them.
             raise InterpreterError(
                 f"{expression.__class__.__name__} is not supported.")
 
@@ -278,15 +268,18 @@ class PythonInterpreter:
 
     def _execute_call(self, call: ast.Call) -> Any:
         callable_func = self._execute_ast(call.func)
-
         args = [self._execute_ast(arg) for arg in call.args]
-        kwargs = {
-            keyword.arg: self._execute_ast(keyword.value)
-            for keyword in call.keywords
-        }
+        # Avoid unnecessary dict comp if no keywords
+        kws = call.keywords
+        if kws:
+            kwargs = {keyword.arg: self._execute_ast(keyword.value) for keyword in kws}
+        else:
+            kwargs = {}
         if isinstance(callable_func, ast.FunctionDef):
             old_state = self.state.copy()
-            for param_name, arg_value in zip([param.arg for param in callable_func.args.args], args):
+            param_names = [param.arg for param in callable_func.args.args]
+            # Zip can be empty: so no perf change but avoids list comprehension in loop
+            for param_name, arg_value in zip(param_names, args):
                 self.state[param_name] = arg_value
             result = None
             for stmt in callable_func.body:
