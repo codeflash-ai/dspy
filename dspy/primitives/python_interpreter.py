@@ -170,79 +170,78 @@ class PythonInterpreter:
     # but is still necessary for older versions.
     @typing.no_type_check
     def _execute_ast(self, expression: ast.AST) -> Any:
-        if isinstance(expression, ast.Assign):
-            # Assignment -> evaluate the assignment which should
-            # update the state. We return the variable assigned as it may
-            # be used to determine the final result.
+        # Reordered checks for improved branch prediction and faster dispatch
+        typ = type(expression)
+        if typ is ast.Name:
+            return self._execute_name(expression)
+        elif typ is ast.Assign:
             return self._execute_assign(expression)
-        elif isinstance(expression, ast.Attribute):
+        elif typ is ast.BinOp:
+            return self._execute_binop(expression)
+        elif typ is ast.Call:
+            return self._execute_call(expression)
+        elif typ is ast.Constant:
+            return expression.value
+        elif typ is ast.Expr:
+            return self._execute_ast(expression.value)
+        elif typ is ast.Attribute:
             value = self._execute_ast(expression.value)
             return getattr(value, expression.attr)
-        elif isinstance(expression, ast.AugAssign):
+        elif typ is ast.AugAssign:
             return self._execute_augassign(expression)
-        elif isinstance(expression, ast.BinOp):
-            # Binary Operator -> return the result value
-            return self._execute_binop(expression)
-        elif isinstance(expression, ast.Call):
-            # Function call -> return the value of the function call
-            return self._execute_call(expression)
-        elif isinstance(expression, ast.Compare):
+        elif typ is ast.Compare:
             return self._execute_condition(expression)
-        elif isinstance(expression, ast.Constant):
-            # Constant -> just return the value
-            return expression.value
-        elif isinstance(expression, ast.Dict):
+        elif typ is ast.Dict:
             # Dict -> evaluate all keys and values
             result: Dict = {}
-            for k, v in zip(expression.keys, expression.values):
+            # Major optimization: combine zipped traversal with single function lookup
+            # Avoid attribute lookup (self._execute_ast) in loop
+            exec_ast = self._execute_ast
+            keys = expression.keys
+            vals = expression.values
+            # Use enumerate to shortcut .update call if k is None
+            for i in range(len(keys)):
+                k = keys[i]
+                v = vals[i]
                 if k is not None:
-                    result[self._execute_ast(k)] = self._execute_ast(v)
+                    result[exec_ast(k)] = exec_ast(v)
                 else:
-                    result.update(self._execute_ast(v))
+                    result.update(exec_ast(v))
             return result
-        elif isinstance(expression, ast.Expr):
-            # Expression -> evaluate the content
-            return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.For):
+        elif typ is ast.For:
             return self._execute_for(expression)
-        elif isinstance(expression, ast.FormattedValue):
-            # Formatted value (part of f-string) -> evaluate the content
-            # and return
+        elif typ is ast.FormattedValue:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.FunctionDef):
+        elif typ is ast.FunctionDef:
             self.state[expression.name] = expression
             return None
-        elif isinstance(expression, ast.If):
-            # If -> execute the right branch
+        elif typ is ast.If:
             return self._execute_if(expression)
-        elif isinstance(expression, ast.Import):
-            # Import -> add imported names in self.state and return None.
+        elif typ is ast.Import:
             self._execute_import(expression)
             return None
-        elif isinstance(expression, ast.ImportFrom):
+        elif typ is ast.ImportFrom:
             self._execute_import_from(expression)
             return None
-        elif hasattr(ast, "Index") and isinstance(expression, ast.Index):
-            # cannot pass type check
+        elif hasattr(ast, "Index") and typ is ast.Index:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.JoinedStr):
-            return "".join(
-                [str(self._execute_ast(v)) for v in expression.values])
-        elif isinstance(expression, ast.List):
-            # List -> evaluate all elements
-            return [self._execute_ast(elt) for elt in expression.elts]
-        elif isinstance(expression, ast.Name):
-            # Name -> pick up the value in the state
-            return self._execute_name(expression)
-        elif isinstance(expression, ast.Return):
+        elif typ is ast.JoinedStr:
+            exec_ast = self._execute_ast
+            # Faster string join
+            return "".join(map(lambda v: str(exec_ast(v)), expression.values))
+        elif typ is ast.List:
+            exec_ast = self._execute_ast
+            # List comprehension rewritten as map for performance
+            return list(map(exec_ast, expression.elts))
+        elif typ is ast.Return:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.Subscript):
-            # Subscript -> return the value of the indexing
+        elif typ is ast.Subscript:
             return self._execute_subscript(expression)
-        elif isinstance(expression, ast.Tuple):
-            return tuple([self._execute_ast(elt) for elt in expression.elts])
-        elif isinstance(expression, ast.UnaryOp):
-            # Binary Operator -> return the result value
+        elif typ is ast.Tuple:
+            exec_ast = self._execute_ast
+            # Tuple comprehension rewritten as map for performance
+            return tuple(map(exec_ast, expression.elts))
+        elif typ is ast.UnaryOp:
             return self._execute_unaryop(expression)
         else:
             # For now we refuse anything else. Let's add things as we need
@@ -251,26 +250,34 @@ class PythonInterpreter:
                 f"{expression.__class__.__name__} is not supported.")
 
     def _execute_assign(self, assign: ast.Assign) -> Any:
+        # Fast-path: avoid attribute lookup inside loop
         targets = assign.targets
         result = self._execute_ast(assign.value)
-
+        # Avoid repeated lookup/branching in loop
+        _assign = self._assign
         for target in targets:
-            self._assign(target, result)
+            _assign(target, result)
         return result
 
     def _assign(self, target: ast.expr, value: Any):
-        if isinstance(target, ast.Name):
+        typ = type(target)
+        if typ is ast.Name:
             self.state[target.id] = value
-        elif isinstance(target, ast.Tuple):
+        elif typ is ast.Tuple:
+            # Check type and length only when required
             if not isinstance(value, tuple):
                 raise InterpreterError(f"Expected type tuple, but got"
                                        f"{value.__class__.__name__} instead.")
-            if len(target.elts) != len(value):
+            elts = target.elts
+            if len(elts) != len(value):
                 raise InterpreterError(
-                    f"Expected {len(target.elts)} values but got"
+                    f"Expected {len(elts)} values but got"
                     f" {len(value)}.")
-            for t, v in zip(target.elts, value):
-                self.state[self._execute_ast(t)] = v
+            # Avoid repeated attribute lookup and function lookup inside loop
+            exec_ast = self._execute_ast
+            state = self.state
+            for t, v in zip(elts, value):
+                state[exec_ast(t)] = v
         else:
             raise InterpreterError(f"Unsupported variable type. Expected "
                                    f"ast.Name or ast.Tuple, got "
