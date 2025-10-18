@@ -27,6 +27,58 @@ from typing import (
     Tuple,
 )
 
+_ASSIGN = ast.Assign
+
+_ATTRIBUTE = ast.Attribute
+
+_AUGASSIGN = ast.AugAssign
+
+_BINOP = ast.BinOp
+
+_CALL = ast.Call
+
+_COMPARE = ast.Compare
+
+_CONSTANT = ast.Constant
+
+_DICT = ast.Dict
+
+_EXPR = ast.Expr
+
+_FOR = ast.For
+
+_FORMATTEDVALUE = ast.FormattedValue
+
+_FUNCTIONDEF = ast.FunctionDef
+
+_IF = ast.If
+
+_IMPORT = ast.Import
+
+_IMPORTFROM = ast.ImportFrom
+
+_INDEX = None
+
+_JOINEDSTR = ast.JoinedStr
+
+_LIST = ast.List
+
+_NAME = ast.Name
+
+_RETURN = ast.Return
+
+_SUBSCRIPT = ast.Subscript
+
+_TUPLE = ast.Tuple
+
+_UNARYOP = ast.UnaryOp
+
+_UADD = ast.UAdd
+
+_USUB = ast.USub
+
+_NOT = ast.Not
+
 
 class InterpreterError(ValueError):
     r"""An error raised when the interpreter cannot evaluate a Python
@@ -170,83 +222,76 @@ class PythonInterpreter:
     # but is still necessary for older versions.
     @typing.no_type_check
     def _execute_ast(self, expression: ast.AST) -> Any:
-        if isinstance(expression, ast.Assign):
-            # Assignment -> evaluate the assignment which should
-            # update the state. We return the variable assigned as it may
-            # be used to determine the final result.
+        tp = type(expression)
+        # Replacing isinstance chains with a faster type() + if/elif chain.
+        if tp is _ASSIGN:
             return self._execute_assign(expression)
-        elif isinstance(expression, ast.Attribute):
+        elif tp is _ATTRIBUTE:
             value = self._execute_ast(expression.value)
             return getattr(value, expression.attr)
-        elif isinstance(expression, ast.AugAssign):
+        elif tp is _AUGASSIGN:
             return self._execute_augassign(expression)
-        elif isinstance(expression, ast.BinOp):
-            # Binary Operator -> return the result value
+        elif tp is _BINOP:
             return self._execute_binop(expression)
-        elif isinstance(expression, ast.Call):
-            # Function call -> return the value of the function call
+        elif tp is _CALL:
             return self._execute_call(expression)
-        elif isinstance(expression, ast.Compare):
+        elif tp is _COMPARE:
             return self._execute_condition(expression)
-        elif isinstance(expression, ast.Constant):
-            # Constant -> just return the value
+        elif tp is _CONSTANT:
             return expression.value
-        elif isinstance(expression, ast.Dict):
+        elif tp is _DICT:
             # Dict -> evaluate all keys and values
             result: Dict = {}
-            for k, v in zip(expression.keys, expression.values):
+            # Avoid local attribute lookups in loop for minor speedup
+            _exec_ast = self._execute_ast
+            keys = expression.keys
+            values = expression.values
+            for k, v in zip(keys, values):
                 if k is not None:
-                    result[self._execute_ast(k)] = self._execute_ast(v)
+                    result[_exec_ast(k)] = _exec_ast(v)
                 else:
-                    result.update(self._execute_ast(v))
+                    result.update(_exec_ast(v))
             return result
-        elif isinstance(expression, ast.Expr):
-            # Expression -> evaluate the content
+        elif tp is _EXPR:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.For):
+        elif tp is _FOR:
             return self._execute_for(expression)
-        elif isinstance(expression, ast.FormattedValue):
-            # Formatted value (part of f-string) -> evaluate the content
-            # and return
+        elif tp is _FORMATTEDVALUE:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.FunctionDef):
+        elif tp is _FUNCTIONDEF:
+            # The contract is to add to state and return None
             self.state[expression.name] = expression
             return None
-        elif isinstance(expression, ast.If):
-            # If -> execute the right branch
+        elif tp is _IF:
             return self._execute_if(expression)
-        elif isinstance(expression, ast.Import):
-            # Import -> add imported names in self.state and return None.
+        elif tp is _IMPORT:
             self._execute_import(expression)
             return None
-        elif isinstance(expression, ast.ImportFrom):
+        elif tp is _IMPORTFROM:
             self._execute_import_from(expression)
             return None
-        elif hasattr(ast, "Index") and isinstance(expression, ast.Index):
+        elif _INDEX is not None and tp is _INDEX:
             # cannot pass type check
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.JoinedStr):
-            return "".join(
-                [str(self._execute_ast(v)) for v in expression.values])
-        elif isinstance(expression, ast.List):
-            # List -> evaluate all elements
-            return [self._execute_ast(elt) for elt in expression.elts]
-        elif isinstance(expression, ast.Name):
-            # Name -> pick up the value in the state
+        elif tp is _JOINEDSTR:
+            # Avoid indirect function call for str in list comp (hot code)
+            _exec_ast = self._execute_ast
+            return ''.join([str(_exec_ast(v)) for v in expression.values])
+        elif tp is _LIST:
+            _exec_ast = self._execute_ast
+            return [_exec_ast(elt) for elt in expression.elts]
+        elif tp is _NAME:
             return self._execute_name(expression)
-        elif isinstance(expression, ast.Return):
+        elif tp is _RETURN:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.Subscript):
-            # Subscript -> return the value of the indexing
+        elif tp is _SUBSCRIPT:
             return self._execute_subscript(expression)
-        elif isinstance(expression, ast.Tuple):
-            return tuple([self._execute_ast(elt) for elt in expression.elts])
-        elif isinstance(expression, ast.UnaryOp):
-            # Binary Operator -> return the result value
+        elif tp is _TUPLE:
+            _exec_ast = self._execute_ast
+            return tuple(_exec_ast(elt) for elt in expression.elts)
+        elif tp is _UNARYOP:
             return self._execute_unaryop(expression)
         else:
-            # For now we refuse anything else. Let's add things as we need
-            # them.
             raise InterpreterError(
                 f"{expression.__class__.__name__} is not supported.")
 
@@ -471,17 +516,18 @@ class PythonInterpreter:
             raise InterpreterError(f"Operator not supported: {operator}")
 
     def _execute_unaryop(self, unaryop: ast.UnaryOp):
+        # Hot path: do attribute lookup to locals, and type/dispatch branch
         operand = self._execute_ast(unaryop.operand)
-        operator = unaryop.op
-
-        if isinstance(operator, ast.UAdd):
+        op = unaryop.op
+        tp = type(op)
+        if tp is _UADD:
             return +operand
-        elif isinstance(operator, ast.USub):
+        elif tp is _USUB:
             return -operand
-        elif isinstance(operator, ast.Not):
+        elif tp is _NOT:
             return not operand
         else:
-            raise InterpreterError(f"Operator not supported: {operator}")
+            raise InterpreterError(f"Operator not supported: {op}")
 
     def _get_value_from_state(self, key: str) -> Any:
         if key in self.state:
