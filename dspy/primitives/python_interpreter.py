@@ -103,6 +103,8 @@ class PythonInterpreter:
         self.state = self.action_space.copy()
         self.fuzz_state: Dict[str, Any] = {}
         self.import_white_list = import_white_list or []
+        # Optimize repeated conversion in _validate_import
+        self._import_white_set = set(self.import_white_list)
 
     def execute(self, code: str, state: Optional[Dict[str, Any]] = None,
                 fuzz_state: Optional[Dict[str, Any]] = None,
@@ -429,18 +431,18 @@ class PythonInterpreter:
             self.state[alias] = getattr(imported_module, import_name.name)
 
     def _validate_import(self, full_name: str):
+        # Optimization: Use a set for O(1) membership tests, and return early without tracking found_name
         tmp_name = ""
-        found_name = False
         for name in full_name.split("."):
-            tmp_name += name if tmp_name == "" else f".{name}"
-            if tmp_name in self.import_white_list:
-                found_name = True
+            tmp_name = name if tmp_name == "" else f"{tmp_name}.{name}"
+            if tmp_name in self._import_white_set:
                 return
 
-        if not found_name:
-            raise InterpreterError(f"It is not permitted to import modules "
-                                   f"than module white list (try to import "
-                                   f"{full_name}).")
+        # Not permitted if no prefix path matches
+        raise InterpreterError(
+            f"It is not permitted to import modules "
+            f"than module white list (try to import {full_name})."
+        )
 
     def _execute_binop(self, binop: ast.BinOp):
         left = self._execute_ast(binop.left)
