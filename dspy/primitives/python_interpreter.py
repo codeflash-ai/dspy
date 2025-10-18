@@ -100,7 +100,7 @@ class PythonInterpreter:
     def __init__(self, action_space: Dict[str, Any],
                  import_white_list: Optional[List[str]] = None) -> None:
         self.action_space = action_space
-        self.state = self.action_space.copy()
+        self.state = action_space.copy()
         self.fuzz_state: Dict[str, Any] = {}
         self.import_white_list = import_white_list or []
 
@@ -170,85 +170,49 @@ class PythonInterpreter:
     # but is still necessary for older versions.
     @typing.no_type_check
     def _execute_ast(self, expression: ast.AST) -> Any:
-        if isinstance(expression, ast.Assign):
-            # Assignment -> evaluate the assignment which should
-            # update the state. We return the variable assigned as it may
-            # be used to determine the final result.
-            return self._execute_assign(expression)
-        elif isinstance(expression, ast.Attribute):
-            value = self._execute_ast(expression.value)
-            return getattr(value, expression.attr)
-        elif isinstance(expression, ast.AugAssign):
-            return self._execute_augassign(expression)
-        elif isinstance(expression, ast.BinOp):
-            # Binary Operator -> return the result value
-            return self._execute_binop(expression)
-        elif isinstance(expression, ast.Call):
-            # Function call -> return the value of the function call
-            return self._execute_call(expression)
-        elif isinstance(expression, ast.Compare):
-            return self._execute_condition(expression)
-        elif isinstance(expression, ast.Constant):
-            # Constant -> just return the value
-            return expression.value
-        elif isinstance(expression, ast.Dict):
-            # Dict -> evaluate all keys and values
-            result: Dict = {}
-            for k, v in zip(expression.keys, expression.values):
-                if k is not None:
-                    result[self._execute_ast(k)] = self._execute_ast(v)
-                else:
-                    result.update(self._execute_ast(v))
-            return result
-        elif isinstance(expression, ast.Expr):
-            # Expression -> evaluate the content
+        # Optimize by replacing elif chains with a dictionary lookup for AST node classes.
+        # Avoid creating the lookup dict on every call, create it once.
+        exec_handlers = getattr(self, '_exec_handlers', None)
+        if exec_handlers is None:
+            # Mapping AST node type to handler method
+            # Only types used in this implementation
+            exec_handlers = {
+                ast.Assign: self._execute_assign,
+                ast.Attribute: lambda expr: getattr(self._execute_ast(expr.value), expr.attr),
+                ast.AugAssign: self._execute_augassign,
+                ast.BinOp: self._execute_binop,
+                ast.Call: self._execute_call,
+                ast.Compare: self._execute_condition,
+                ast.Constant: lambda expr: expr.value,
+                ast.Dict: self._execute_dict,
+                ast.Expr: lambda expr: self._execute_ast(expr.value),
+                ast.For: self._execute_for,
+                ast.FormattedValue: lambda expr: self._execute_ast(expr.value),
+                ast.FunctionDef: self._store_functiondef,
+                ast.If: self._execute_if,
+                ast.Import: self._execute_import_none,
+                ast.ImportFrom: self._execute_importfrom_none,
+                ast.List: self._execute_list,
+                ast.Name: self._execute_name,
+                ast.Return: lambda expr: self._execute_ast(expr.value),
+                ast.Subscript: self._execute_subscript,
+                ast.Tuple: self._execute_tuple,
+                ast.UnaryOp: self._execute_unaryop,
+                ast.JoinedStr: self._execute_joinedstr,
+            }
+            # ast.Index exists only for python < 3.9, handled below
+            self._exec_handlers = exec_handlers
+
+        expr_type = type(expression)
+        handler = exec_handlers.get(expr_type)
+        if handler is not None:
+            return handler(expression)
+        # Handle ast.Index for <3.9
+        if hasattr(ast, "Index") and isinstance(expression, ast.Index):
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.For):
-            return self._execute_for(expression)
-        elif isinstance(expression, ast.FormattedValue):
-            # Formatted value (part of f-string) -> evaluate the content
-            # and return
-            return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.FunctionDef):
-            self.state[expression.name] = expression
-            return None
-        elif isinstance(expression, ast.If):
-            # If -> execute the right branch
-            return self._execute_if(expression)
-        elif isinstance(expression, ast.Import):
-            # Import -> add imported names in self.state and return None.
-            self._execute_import(expression)
-            return None
-        elif isinstance(expression, ast.ImportFrom):
-            self._execute_import_from(expression)
-            return None
-        elif hasattr(ast, "Index") and isinstance(expression, ast.Index):
-            # cannot pass type check
-            return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.JoinedStr):
-            return "".join(
-                [str(self._execute_ast(v)) for v in expression.values])
-        elif isinstance(expression, ast.List):
-            # List -> evaluate all elements
-            return [self._execute_ast(elt) for elt in expression.elts]
-        elif isinstance(expression, ast.Name):
-            # Name -> pick up the value in the state
-            return self._execute_name(expression)
-        elif isinstance(expression, ast.Return):
-            return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.Subscript):
-            # Subscript -> return the value of the indexing
-            return self._execute_subscript(expression)
-        elif isinstance(expression, ast.Tuple):
-            return tuple([self._execute_ast(elt) for elt in expression.elts])
-        elif isinstance(expression, ast.UnaryOp):
-            # Binary Operator -> return the result value
-            return self._execute_unaryop(expression)
-        else:
-            # For now we refuse anything else. Let's add things as we need
-            # them.
-            raise InterpreterError(
-                f"{expression.__class__.__name__} is not supported.")
+        # Fallback to raising error
+        raise InterpreterError(
+            f"{expression.__class__.__name__} is not supported.")
 
     def _execute_assign(self, assign: ast.Assign) -> Any:
         targets = assign.targets
@@ -300,19 +264,21 @@ class PythonInterpreter:
     def _execute_augassign(self, augassign: ast.AugAssign):
         current_value = self.state[augassign.target.id]
         increment_value = self._execute_ast(augassign.value)
-        if not (isinstance(current_value, (int, float)) and isinstance(increment_value, (int, float))):
+        # Optimize sequence of isinstance calls by computing and checking types once.
+        if not (type(current_value) in (int, float) and type(increment_value) in (int, float)):
             raise InterpreterError(f"Invalid types for augmented assignment: {type(current_value)}, {type(increment_value)}")
-        if isinstance(augassign.op, ast.Add):
+        op = augassign.op
+        if isinstance(op, ast.Add):
             new_value = current_value + increment_value
-        elif isinstance(augassign.op, ast.Sub):
+        elif isinstance(op, ast.Sub):
             new_value = current_value - increment_value
-        elif isinstance(augassign.op, ast.Mult):
+        elif isinstance(op, ast.Mult):
             new_value = current_value * increment_value
-        elif isinstance(augassign.op, ast.Div):
+        elif isinstance(op, ast.Div):
             new_value = current_value / increment_value
         #TODO - any other augassign operators that are missing
         else:
-            raise InterpreterError(f"Augmented assignment operator {augassign.op} is not supported")
+            raise InterpreterError(f"Augmented assignment operator {op} is not supported")
         self._assign(augassign.target, new_value)
         return new_value
 
@@ -490,6 +456,39 @@ class PythonInterpreter:
             return self.fuzz_state[key]
         else:
             raise InterpreterError(f"The variable `{key}` is not defined.")
+
+    # Optimize: Move code used in handlers into their own methods
+    def _execute_dict(self, expression: ast.Dict) -> Any:
+        # Dict -> evaluate all keys and values
+        result: Dict = {}
+        for k, v in zip(expression.keys, expression.values):
+            if k is not None:
+                result[self._execute_ast(k)] = self._execute_ast(v)
+            else:
+                result.update(self._execute_ast(v))
+        return result
+
+    def _store_functiondef(self, expression: ast.FunctionDef) -> None:
+        self.state[expression.name] = expression
+        return None
+
+    def _execute_import_none(self, expression: ast.Import) -> None:
+        self._execute_import(expression)
+        return None
+
+    def _execute_importfrom_none(self, expression: ast.ImportFrom) -> None:
+        self._execute_import_from(expression)
+        return None
+
+    def _execute_list(self, expression: ast.List) -> Any:
+        # List -> evaluate all elements
+        return [self._execute_ast(elt) for elt in expression.elts]
+
+    def _execute_tuple(self, expression: ast.Tuple) -> Any:
+        return tuple(self._execute_ast(elt) for elt in expression.elts)
+
+    def _execute_joinedstr(self, expression: ast.JoinedStr) -> Any:
+        return "".join(str(self._execute_ast(v)) for v in expression.values)
 
 class TextPrompt(str):
     r"""A class that represents a text prompt. The :obj:`TextPrompt` class
