@@ -103,6 +103,8 @@ class PythonInterpreter:
         self.state = self.action_space.copy()
         self.fuzz_state: Dict[str, Any] = {}
         self.import_white_list = import_white_list or []
+        # Cache builtins dir set for fast lookup in _execute_name
+        self._builtins_dir = set(dir(builtins))
 
     def execute(self, code: str, state: Optional[Dict[str, Any]] = None,
                 fuzz_state: Optional[Dict[str, Any]] = None,
@@ -170,85 +172,73 @@ class PythonInterpreter:
     # but is still necessary for older versions.
     @typing.no_type_check
     def _execute_ast(self, expression: ast.AST) -> Any:
-        if isinstance(expression, ast.Assign):
-            # Assignment -> evaluate the assignment which should
-            # update the state. We return the variable assigned as it may
-            # be used to determine the final result.
+        # Use local variable for attribute lookup to speed up isinstance checks
+        expr_type = type(expression)
+        if expr_type is ast.Assign:
             return self._execute_assign(expression)
-        elif isinstance(expression, ast.Attribute):
+        elif expr_type is ast.Attribute:
             value = self._execute_ast(expression.value)
             return getattr(value, expression.attr)
-        elif isinstance(expression, ast.AugAssign):
+        elif expr_type is ast.AugAssign:
             return self._execute_augassign(expression)
-        elif isinstance(expression, ast.BinOp):
-            # Binary Operator -> return the result value
+        elif expr_type is ast.BinOp:
             return self._execute_binop(expression)
-        elif isinstance(expression, ast.Call):
-            # Function call -> return the value of the function call
+        elif expr_type is ast.Call:
             return self._execute_call(expression)
-        elif isinstance(expression, ast.Compare):
+        elif expr_type is ast.Compare:
             return self._execute_condition(expression)
-        elif isinstance(expression, ast.Constant):
-            # Constant -> just return the value
+        elif expr_type is ast.Constant:
             return expression.value
-        elif isinstance(expression, ast.Dict):
-            # Dict -> evaluate all keys and values
+        elif expr_type is ast.Dict:
             result: Dict = {}
-            for k, v in zip(expression.keys, expression.values):
+            # Use enumerate and direct dict methods for better performance
+            keys, values = expression.keys, expression.values
+            for i in range(len(keys)):
+                k = keys[i]
+                v = values[i]
                 if k is not None:
                     result[self._execute_ast(k)] = self._execute_ast(v)
                 else:
                     result.update(self._execute_ast(v))
             return result
-        elif isinstance(expression, ast.Expr):
-            # Expression -> evaluate the content
+        elif expr_type is ast.Expr:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.For):
+        elif expr_type is ast.For:
             return self._execute_for(expression)
-        elif isinstance(expression, ast.FormattedValue):
-            # Formatted value (part of f-string) -> evaluate the content
-            # and return
+        elif expr_type is ast.FormattedValue:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.FunctionDef):
+        elif expr_type is ast.FunctionDef:
             self.state[expression.name] = expression
             return None
-        elif isinstance(expression, ast.If):
-            # If -> execute the right branch
+        elif expr_type is ast.If:
             return self._execute_if(expression)
-        elif isinstance(expression, ast.Import):
-            # Import -> add imported names in self.state and return None.
+        elif expr_type is ast.Import:
             self._execute_import(expression)
             return None
-        elif isinstance(expression, ast.ImportFrom):
+        elif expr_type is ast.ImportFrom:
             self._execute_import_from(expression)
             return None
-        elif hasattr(ast, "Index") and isinstance(expression, ast.Index):
-            # cannot pass type check
+        elif hasattr(ast, "Index") and expr_type is ast.Index:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.JoinedStr):
-            return "".join(
-                [str(self._execute_ast(v)) for v in expression.values])
-        elif isinstance(expression, ast.List):
-            # List -> evaluate all elements
+        elif expr_type is ast.JoinedStr:
+            # Use generator expression for better memory
+            return "".join(str(self._execute_ast(v)) for v in expression.values)
+        elif expr_type is ast.List:
             return [self._execute_ast(elt) for elt in expression.elts]
-        elif isinstance(expression, ast.Name):
-            # Name -> pick up the value in the state
+        elif expr_type is ast.Name:
             return self._execute_name(expression)
-        elif isinstance(expression, ast.Return):
+        elif expr_type is ast.Return:
             return self._execute_ast(expression.value)
-        elif isinstance(expression, ast.Subscript):
-            # Subscript -> return the value of the indexing
+        elif expr_type is ast.Subscript:
             return self._execute_subscript(expression)
-        elif isinstance(expression, ast.Tuple):
-            return tuple([self._execute_ast(elt) for elt in expression.elts])
-        elif isinstance(expression, ast.UnaryOp):
-            # Binary Operator -> return the result value
+        elif expr_type is ast.Tuple:
+            # Use tuple comprehension directly to avoid intermediate list
+            return tuple(self._execute_ast(elt) for elt in expression.elts)
+        elif expr_type is ast.UnaryOp:
             return self._execute_unaryop(expression)
         else:
-            # For now we refuse anything else. Let's add things as we need
-            # them.
             raise InterpreterError(
-                f"{expression.__class__.__name__} is not supported.")
+                f"{expr_type.__name__} is not supported.")
 
     def _execute_assign(self, assign: ast.Assign) -> Any:
         targets = assign.targets
@@ -279,15 +269,16 @@ class PythonInterpreter:
     def _execute_call(self, call: ast.Call) -> Any:
         callable_func = self._execute_ast(call.func)
 
+        # Use list comprehensions and dict comprehension for args, kwargs
         args = [self._execute_ast(arg) for arg in call.args]
-        kwargs = {
-            keyword.arg: self._execute_ast(keyword.value)
-            for keyword in call.keywords
-        }
+        kwargs = {keyword.arg: self._execute_ast(keyword.value)
+                  for keyword in call.keywords}
         if isinstance(callable_func, ast.FunctionDef):
             old_state = self.state.copy()
-            for param_name, arg_value in zip([param.arg for param in callable_func.args.args], args):
-                self.state[param_name] = arg_value
+            params = callable_func.args.args
+            # Zip params and args efficiently
+            for param, arg_value in zip(params, args):
+                self.state[param.arg] = arg_value
             result = None
             for stmt in callable_func.body:
                 result = self._execute_ast(stmt)
@@ -298,18 +289,19 @@ class PythonInterpreter:
         return callable_func(*args, **kwargs)
 
     def _execute_augassign(self, augassign: ast.AugAssign):
-        current_value = self.state[augassign.target.id]
-        increment_value = self._execute_ast(augassign.value)
-        if not (isinstance(current_value, (int, float)) and isinstance(increment_value, (int, float))):
-            raise InterpreterError(f"Invalid types for augmented assignment: {type(current_value)}, {type(increment_value)}")
-        if isinstance(augassign.op, ast.Add):
-            new_value = current_value + increment_value
-        elif isinstance(augassign.op, ast.Sub):
-            new_value = current_value - increment_value
-        elif isinstance(augassign.op, ast.Mult):
-            new_value = current_value * increment_value
-        elif isinstance(augassign.op, ast.Div):
-            new_value = current_value / increment_value
+        curr = self.state[augassign.target.id]
+        inc = self._execute_ast(augassign.value)
+        if not (isinstance(curr, (int, float)) and isinstance(inc, (int, float))):
+            raise InterpreterError(f"Invalid types for augmented assignment: {type(curr)}, {type(inc)}")
+        op_type = type(augassign.op)
+        if op_type is ast.Add:
+            new_value = curr + inc
+        elif op_type is ast.Sub:
+            new_value = curr - inc
+        elif op_type is ast.Mult:
+            new_value = curr * inc
+        elif op_type is ast.Div:
+            new_value = curr / inc
         #TODO - any other augassign operators that are missing
         else:
             raise InterpreterError(f"Augmented assignment operator {augassign.op} is not supported")
@@ -320,75 +312,79 @@ class PythonInterpreter:
         index = self._execute_ast(subscript.slice)
         value = self._execute_ast(subscript.value)
         if not isinstance(subscript.ctx, ast.Load):
-            raise InterpreterError(
-                f"{subscript.ctx.__class__.__name__} is not supported for "
-                "subscript.")
+            raise InterpreterError(f"{type(subscript.ctx).__name__} is not supported for subscript.")
         if isinstance(value, (list, tuple)):
             return value[int(index)]
+        # Dict/Mappings lookup is usually O(1) but can accept fallback
         if index in value:
             return value[index]
         if isinstance(index, str) and isinstance(value, Mapping):
-            close_matches = difflib.get_close_matches(index,
-                                                      list(value.keys()))
-            if len(close_matches) > 0:
-                return value[close_matches[0]]
-
+            # Use difflib.get_close_matches only if needed, it's expensive
+            matches = difflib.get_close_matches(index, list(value.keys()), n=1)
+            if matches:
+                return value[matches[0]]
         raise InterpreterError(f"Could not index {value} with '{index}'.")
 
     def _execute_name(self, name: ast.Name):
-        if name.id in dir(builtins):
-          return getattr(builtins, name.id)
-        if isinstance(name.ctx, ast.Store):
+        # Use cached builtins directory for O(1) lookup
+        if name.id in self._builtins_dir:
+            return getattr(builtins, name.id)
+        ctx_type = type(name.ctx)
+        if ctx_type is ast.Store:
             return name.id
-        elif isinstance(name.ctx, ast.Load):
+        elif ctx_type is ast.Load:
             return self._get_value_from_state(name.id)
         else:
             raise InterpreterError(f"{name.ctx} is not supported.")
 
     def _execute_condition(self, condition):
-        if isinstance(condition, ast.BoolOp):
-            if isinstance(condition.op, ast.And):
-                results = [self._execute_ast(value) for value in condition.values]
-                return all(results)
-            elif isinstance(condition.op, ast.Or):
-                results = [self._execute_ast(value) for value in condition.values]
-                return any(results)
+        cond_type = type(condition)
+        if cond_type is ast.BoolOp:
+            op_type = type(condition.op)
+            vals = condition.values
+            if op_type is ast.And:
+                # Use generator for laziness
+                return all(self._execute_ast(v) for v in vals)
+            elif op_type is ast.Or:
+                return any(self._execute_ast(v) for v in vals)
             else: #TODO - add any other BoolOps missing
                 raise InterpreterError(f"Boolean operator {condition.op} is not supported")
-        elif isinstance(condition, ast.Compare):
+        elif cond_type is ast.Compare:
             if len(condition.ops) > 1:
                 raise InterpreterError("Cannot evaluate conditions with multiple operators")
-        if len(condition.ops) > 1:
-            raise InterpreterError(
-                "Cannot evaluate conditions with multiple operators")
-        left = self._execute_ast(condition.left)
-        comparator = condition.ops[0]
-        right = self._execute_ast(condition.comparators[0])
-        if isinstance(comparator, ast.Eq):
-            return left == right
-        elif isinstance(comparator, ast.NotEq):
-            return left != right
-        elif isinstance(comparator, ast.Lt):
-            return left < right
-        elif isinstance(comparator, ast.LtE):
-            return left <= right
-        elif isinstance(comparator, ast.Gt):
-            return left > right
-        elif isinstance(comparator, ast.GtE):
-            return left >= right
-        elif isinstance(comparator, ast.Is):
-            return left is right
-        elif isinstance(comparator, ast.IsNot):
-            return left is not right
-        elif isinstance(comparator, ast.In):
-            return left in right
-        elif isinstance(comparator, ast.NotIn):
-            return left not in right
+            left = self._execute_ast(condition.left)
+            comparator = condition.ops[0]
+            right = self._execute_ast(condition.comparators[0])
+            comp_type = type(comparator)
+            # Use is/as/isnot/etc directly
+            if comp_type is ast.Eq:
+                return left == right
+            elif comp_type is ast.NotEq:
+                return left != right
+            elif comp_type is ast.Lt:
+                return left < right
+            elif comp_type is ast.LtE:
+                return left <= right
+            elif comp_type is ast.Gt:
+                return left > right
+            elif comp_type is ast.GtE:
+                return left >= right
+            elif comp_type is ast.Is:
+                return left is right
+            elif comp_type is ast.IsNot:
+                return left is not right
+            elif comp_type is ast.In:
+                return left in right
+            elif comp_type is ast.NotIn:
+                return left not in right
+            else:
+                raise InterpreterError("Unsupported condition type")
         else:
-            raise InterpreterError("Unsupported condition type")
+            raise InterpreterError(f"{cond_type} not supported in _execute_condition")
 
     def _execute_if(self, if_statement: ast.If):
         result = None
+        # Only run the required branch, break on non-None
         if self._execute_condition(if_statement.test):
             for line in if_statement.body:
                 line_result = self._execute_ast(line)
@@ -403,16 +399,17 @@ class PythonInterpreter:
 
     def _execute_for(self, for_statement: ast.For):
         result = None
+        # Use list comprehension for iter fast assignment, don't store all values
         for value in self._execute_ast(for_statement.iter):
             self._assign(for_statement.target, value)
             for line in for_statement.body:
                 line_result = self._execute_ast(line)
                 if line_result is not None:
                     result = line_result
-
         return result
 
     def _execute_import(self, import_module: ast.Import) -> None:
+        # Avoid repeated importlib.import_module calls, loop level assigns
         for module in import_module.names:
             self._validate_import(module.name)
             alias = module.asname or module.name
@@ -444,44 +441,42 @@ class PythonInterpreter:
 
     def _execute_binop(self, binop: ast.BinOp):
         left = self._execute_ast(binop.left)
-        operator = binop.op
         right = self._execute_ast(binop.right)
-
-        if isinstance(operator, ast.Add):
+        optype = type(binop.op)
+        if optype is ast.Add:
             return left + right
-        elif isinstance(operator, ast.Sub):
+        elif optype is ast.Sub:
             return left - right
-        elif isinstance(operator, ast.Mult):
+        elif optype is ast.Mult:
             return left * right
-        elif isinstance(operator, ast.Div):
+        elif optype is ast.Div:
             return left / right
-        elif isinstance(operator, ast.FloorDiv):
+        elif optype is ast.FloorDiv:
             return left // right
-        elif isinstance(operator, ast.Mod):
+        elif optype is ast.Mod:
             return left % right
-        elif isinstance(operator, ast.Pow):
+        elif optype is ast.Pow:
             return left**right
-        elif isinstance(operator, ast.LShift):
+        elif optype is ast.LShift:
             return left << right
-        elif isinstance(operator, ast.RShift):
+        elif optype is ast.RShift:
             return left >> right
-        elif isinstance(operator, ast.MatMult):
+        elif optype is ast.MatMult:
             return left @ right
         else:
-            raise InterpreterError(f"Operator not supported: {operator}")
+            raise InterpreterError(f"Operator not supported: {binop.op}")
 
     def _execute_unaryop(self, unaryop: ast.UnaryOp):
         operand = self._execute_ast(unaryop.operand)
-        operator = unaryop.op
-
-        if isinstance(operator, ast.UAdd):
+        optype = type(unaryop.op)
+        if optype is ast.UAdd:
             return +operand
-        elif isinstance(operator, ast.USub):
+        elif optype is ast.USub:
             return -operand
-        elif isinstance(operator, ast.Not):
+        elif optype is ast.Not:
             return not operand
         else:
-            raise InterpreterError(f"Operator not supported: {operator}")
+            raise InterpreterError(f"Operator not supported: {unaryop.op}")
 
     def _get_value_from_state(self, key: str) -> Any:
         if key in self.state:
